@@ -1,6 +1,7 @@
 import random
 import  telebot
 import psycopg2
+from psycopg2 import pool
 from telebot import types
 from dotenv import load_dotenv
 import os
@@ -18,6 +19,72 @@ db_schema_name = os.getenv("DB_SCHEMA_NAME")
 
 bot = telebot.TeleBot(telegram_bot_token)
 
+# Пул соединений
+connection_pool = pool.SimpleConnectionPool(
+    minconn=1,
+    maxconn=10,
+    host=db_host,
+    database=db_name,
+    user=db_user,
+    password=db_password
+)
+
+# Выполнение запросов без возврата данных
+def execute_query(query, params=None):
+    connection = None
+    cursor = None
+    try:
+        connection = connection_pool.getconn()
+        cursor = connection.cursor()
+        cursor.execute(query, params)
+        connection.commit()
+    except Exception as error:
+        print("Ошибка при работе в execute_query с PostgreSQL:", error)
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection_pool.putconn(connection)
+
+# Выполнение запросов с возвратом данных
+def fetch_query_all(query, params=None):
+    connection = None
+    cursor = None
+    try:
+        connection = connection_pool.getconn()
+        cursor = connection.cursor()
+        cursor.execute(query, params)
+        result = cursor.fetchall()
+        return result
+    except Exception as error:
+        print("Ошибка при работе в fetch_query_all с PostgreSQL:", error)
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection_pool.putconn(connection)
+
+# Выполнение запросов с возвратом данных
+def fetch_query_one(query, params=None):
+    connection = None
+    cursor = None
+    try:
+        connection = connection_pool.getconn()
+        cursor = connection.cursor()
+        cursor.execute(query, params)
+        result = cursor.fetchone()
+        return result
+    except Exception as error:
+        print("Ошибка при работе в fetch_query_one с PostgreSQL:", error)
+        raise
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection_pool.putconn(connection)
+
 # Метод, который получает сообщения и обрабатывает их
 @bot.message_handler(content_types=['text'])
 def get_text_messages(message):
@@ -26,28 +93,15 @@ def get_text_messages(message):
 
         # Подключение к локальной базе данных PostgreSQL
         try:
-            # Создание соединения
-            connection = psycopg2.connect(
-                host=db_host,  # Хост
-                database=db_name,  # Название базы данных
-                user=db_user,  # имя пользователя PostgreSQL
-                password=db_password  # пароль
-            )
-
-            cursor = connection.cursor()
-
             query = f'''SELECT * FROM {db_schema_name}.user WHERE tg_id = '{message.from_user.id}';'''
 
-            cursor.execute(query)
-
             # Получение результатов запроса
-            user = cursor.fetchone()
+            user = fetch_query_one(query)
 
             if user is None:
                 msg = 'Привет! Я бот, который запоминает твои тренировки 😊'
                 # Добавляем пользователя в базу данных
-                cursor.execute(f'''INSERT INTO {db_schema_name}.user(tg_id, last_menu) VALUES ({message.from_user.id}, 'new_user');''')
-                connection.commit()
+                execute_query(f'''INSERT INTO {db_schema_name}.user(tg_id, last_menu) VALUES ({message.from_user.id}, 'new_user');''')
             else:
                 msg = 'Привет! Удачных тренировок 🐒'
 
@@ -59,15 +113,7 @@ def get_text_messages(message):
             bot.send_message(message.from_user.id, text=msg, reply_markup=keyboard)
 
         except Exception as error:
-            print("Ошибка при работе с PostgreSQL:", error)
-
-        finally:
-            # Закрытие курсора и соединения
-            if connection:
-                cursor.close()
-                connection.close()
-                print("Соединение с PostgreSQL закрыто")
-
+            print("Ошибка (get_text_messages) при работе с PostgreSQL:", error)
     else:
         bot.send_message(message.from_user.id, "Я тебя не понимаю. Напиши /start.")
 
@@ -78,18 +124,7 @@ def callback_worker(call):
     if call.data == "start":
         try:
             msg = 'Для начала выбери тренировочный день'
-            connection = psycopg2.connect(
-                host=db_host,  # Хост
-                database=db_name,  # Название базы данных
-                user=db_user,  # имя пользователя PostgreSQL
-                password=db_password  # пароль
-            )
-
-            cursor = connection.cursor()
-            cursor.execute(
-                f'''UPDATE {db_schema_name}.user SET last_menu = 'choose_day' WHERE tg_id = {call.from_user.id};''')
-            connection.commit()
-
+            execute_query(f'''UPDATE {db_schema_name}.user SET last_menu = 'choose_day' WHERE tg_id = {call.from_user.id};''')
             keyboard = types.InlineKeyboardMarkup()
             key_new_training = types.InlineKeyboardButton(text='Создать новый тренировочный день', callback_data='new_training_day')
             key_back = types.InlineKeyboardButton(text='Назад', callback_data='back_menu')
@@ -99,14 +134,7 @@ def callback_worker(call):
             # Показываем все кнопки сразу и пишем сообщение о выборе
             bot.send_message(call.from_user.id, text=msg, reply_markup=keyboard)
         except Exception as error:
-            print("Ошибка при работе с PostgreSQL:", error)
-
-        finally:
-            # Закрытие курсора и соединения
-            if connection:
-                cursor.close()
-                connection.close()
-                print("Соединение с PostgreSQL закрыто")
+            print("Ошибка (callback_query_handler) при работе с PostgreSQL:", error)
 
     else:
         bot.send_message(call.from_user.id, "Я тебя не понимаю. Напиши /start.")
